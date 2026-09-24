@@ -284,7 +284,7 @@ input,select,textarea{font-size:16px}
 
 /* ---------- Firebase (Auth + a lightweight user-profile collection) ---------- */
 const FB_CONFIG={apiKey:"AIzaSyDiAalkeNXi7DheZfnCtgW6n4IQGvJ5698",authDomain:"invoice-dorkar24.firebaseapp.com",projectId:"invoice-dorkar24",storageBucket:"invoice-dorkar24.firebasestorage.app",messagingSenderId:"824694977472",appId:"1:824694977472:web:6c14810764a0a9d6fa8e25",measurementId:"G-92XL2LZSVP"};
-const ADMIN_EMAIL='YOUR-EMAIL@EXAMPLE.COM'; // <-- EDIT: the email you sign up with as the owner, then redeploy (must also match firestore.rules)
+const ADMIN_EMAIL='nisaruddin360@gmail.com'; // the site owner's sign-up email (must match firestore.rules)
 let fb=null;
 const FB_READY=(async()=>{
   try{
@@ -306,6 +306,25 @@ function authErr(e){
   return m[c]||t('authBad');
 }
 async function pushProfile(u,fields){const F=await ensureFB();if(!F)return;try{await F.F.setDoc(F.F.doc(F.db,'users',u.id),fields,{merge:true})}catch(e){toast(t('fbFail'))}}
+const pushTimers={};
+function scheduleCloudSave(){
+  const u=curUser();if(!u)return;
+  const uid=u.id,snap=S;
+  clearTimeout(pushTimers[uid]);
+  pushTimers[uid]=setTimeout(()=>{delete pushTimers[uid];pushDataFor(uid,snap)},900);
+}
+async function pushDataFor(uid,dataObj){
+  const F=await ensureFB();if(!F)return false;
+  try{await F.F.setDoc(F.F.doc(F.db,'businessData',uid),Object.assign({},dataObj,{savedAt:Date.now()}));return true}catch(e){return false}
+}
+async function pullDataFor(uid){
+  const F=await ensureFB();if(!F)return null;
+  try{const snap=await F.F.getDoc(F.F.doc(F.db,'businessData',uid));return snap.exists()?snap.data():null}catch(e){return null}
+}
+async function deleteDataFor(uid){
+  const F=await ensureFB();if(!F)return;
+  try{await F.F.deleteDoc(F.F.doc(F.db,'businessData',uid))}catch(e){}
+}
 async function wireAuth(){
   const F=await ensureFB();
   if(!F){ADMIN_OK=false;render();return}
@@ -324,11 +343,13 @@ async function wireAuth(){
     try{await F.F.setDoc(F.F.doc(F.db,'users',user.uid),{lastLogin:u.lastLogin},{merge:true})}catch(e){}
     ROOT.session={uid:user.uid};attach(user.uid);
     ADMIN_OK=(user.email===ADMIN_EMAIL);
-    save();
+    render();
+    try{const snap=await F.F.getDoc(F.F.doc(F.db,'businessData',user.uid));
+      if(snap.exists()){S=snap.data();ROOT.data[user.uid]=S;try{localStorage.setItem(KEY,JSON.stringify(ROOT))}catch(e){}render()}
+    }catch(e){}
     if(ADMIN_OK){
       try{const qs=await F.F.getDocs(F.F.collection(F.db,'users'));ROOT.users=qs.docs.map(d=>Object.assign({id:d.id},d.data()));save()}catch(e){}
     }
-    render();
   });
 }
 /* =========================================================
@@ -575,7 +596,7 @@ function attach(id){
   if(!S.lang)S.lang=ROOT.lang;
 }
 function detach(){S=fresh();S.lang=ROOT.lang}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(ROOT))}catch(e){memStore=ROOT;try{toast(t('storageFull'))}catch(x){}}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(ROOT))}catch(e){memStore=ROOT;try{toast(t('storageFull'))}catch(x){}}scheduleCloudSave()}
 function restoreSession(){const s=ROOT.session;if(s&&(s.admin||s.asAdmin)){ROOT.session=null;save();return}if(!s)return;const u=ROOT.users.find(x=>x.id===s.uid);if(!u||u.suspended){ROOT.session=null;save();return}attach(u.id)}
 const userById=id=>ROOT.users.find(u=>u.id===id);
 const curUser=()=>(ROOT.session&&!ROOT.session.admin)?(userById(ROOT.session.uid)||null):null;
@@ -1478,6 +1499,7 @@ ACT.delacct=()=>confirmBox(t('confirmDelAcct'),async()=>{
   const F=await ensureFB();const u=curUser();
   if(F&&F.auth.currentUser){
     try{await F.F.deleteDoc(F.F.doc(F.db,'users',F.auth.currentUser.uid))}catch(e){}
+    try{await F.F.deleteDoc(F.F.doc(F.db,'businessData',F.auth.currentUser.uid))}catch(e){}
     try{await F.A.deleteUser(F.auth.currentUser)}catch(e){if(e&&e.code==='auth/requires-recent-login'){toast(t('authRecent'));return}}
   }
   if(u){ROOT.users=ROOT.users.filter(x=>x.id!==u.id);delete ROOT.data[u.id]}
@@ -1553,8 +1575,8 @@ CH.uuntil=(v,el)=>{const u=userById(el.dataset.id);u.until=v;pushProfile(u,{unti
 ACT.usub=d=>{const u=userById(d.id);u.subOn=!u.subOn;pushProfile(u,{subOn:u.subOn});auditLog('sub',u,u.subOn?'ON':'OFF');render()};
 ACT.usus=d=>{const u=userById(d.id);u.suspended=!u.suspended;pushProfile(u,{suspended:u.suspended});auditLog('suspend',u,u.suspended?'ON':'OFF');render()};
 ACT.upw=async d=>{const u=userById(d.id),F=await ensureFB();if(!F)return;try{await F.A.sendPasswordResetEmail(F.auth,u.email);auditLog('pw',u);toast(t('resetPwSent',u.email))}catch(e){toast(authErr(e))}};
-ACT.udel=d=>confirmBox(t('confirmDelUser'),async()=>{const u=userById(d.id),F=await ensureFB();if(F){try{await F.F.deleteDoc(F.F.doc(F.db,'users',d.id))}catch(e){}}if(u)auditLog('del',u);ROOT.users=ROOT.users.filter(x=>x.id!==d.id);delete ROOT.data[d.id];save();render()},t('delete'),1);
-ACT.uopen=d=>{const u=userById(d.id);if(!u||ADMIN_OK!==true)return;auditLog('open',u);ROOT.session={uid:u.id,asAdmin:true};attach(u.id);save();go('/app/dashboard')};
+ACT.udel=d=>confirmBox(t('confirmDelUser'),async()=>{const u=userById(d.id),F=await ensureFB();if(F){try{await F.F.deleteDoc(F.F.doc(F.db,'users',d.id))}catch(e){}try{await F.F.deleteDoc(F.F.doc(F.db,'businessData',d.id))}catch(e){}}if(u)auditLog('del',u);ROOT.users=ROOT.users.filter(x=>x.id!==d.id);delete ROOT.data[d.id];save();render()},t('delete'),1);
+ACT.uopen=async d=>{const u=userById(d.id);if(!u||ADMIN_OK!==true)return;ROOT.session={uid:u.id,asAdmin:true};attach(u.id);const cloud=await pullDataFor(u.id);if(cloud){S=cloud;ROOT.data[u.id]=S}auditLog('open',u);save();go('/app/dashboard')};
 ACT.adminback=()=>{ROOT.session=null;detach();save();UI.ed=null;UI.cart=null;go('/admin')};
 ACT.uedit=d=>{
   const u=userById(d.id);
@@ -1563,9 +1585,9 @@ ACT.uedit=d=>{
     u.name=v.name.trim();pushProfile(u,{name:u.name});auditLog('edit',u);render();
   }});
 };
-ACT.ureset=d=>{const u=userById(d.id);if(ROOT.data[u.id])ROOT.data[u.id].usage={};auditLog('usage',u);render()};
-ACT.uexport=d=>{const u=userById(d.id),o=Object.assign({},u);delete o.pw;auditLog('export',u);copy(JSON.stringify({account:o,data:ROOT.data[u.id]||null},null,2))};
-ACT.uwipe=d=>confirmBox(t('confirmErase'),()=>{const u=userById(d.id);const f=fresh();f.lang=ROOT.lang;ROOT.data[u.id]=f;auditLog('wipe',u);render()},t('eraseData'),1);
+ACT.ureset=async d=>{const u=userById(d.id);const cloud=(await pullDataFor(u.id))||ROOT.data[u.id];if(cloud){cloud.usage={};ROOT.data[u.id]=cloud;await pushDataFor(u.id,cloud)}auditLog('usage',u);render()};
+ACT.uexport=async d=>{const u=userById(d.id),o=Object.assign({},u);delete o.pw;auditLog('export',u);const cloud=(await pullDataFor(u.id))||ROOT.data[u.id]||null;copy(JSON.stringify({account:o,data:cloud},null,2))};
+ACT.uwipe=d=>confirmBox(t('confirmErase'),async()=>{const u=userById(d.id);const f=fresh();f.lang=ROOT.lang;ROOT.data[u.id]=f;auditLog('wipe',u);await pushDataFor(u.id,f);render()},t('eraseData'),1);
 INP.pname=(v,el)=>{ROOT.plans[el.dataset.k].name=v||el.dataset.k;save()};
 INP.plim=(v,el)=>{ROOT.plans[el.dataset.k][el.dataset.f]=v.trim()===''?null:Math.max(0,parseInt(v,10)||0);save()};
 CH.pper=(v,el)=>{ROOT.plans[el.dataset.k].per=v;save()};
